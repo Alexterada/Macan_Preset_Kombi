@@ -6,9 +6,10 @@ the full station list — on **Porsche Macan PCM (MIB2 High / MHI2)**.
 This is something the forums have long said is **impossible without a factory software
 feature that never shipped**. It turns out it *is* possible, by patching one HMI class.
 
-> **Status: working, with known issues (WIP).** Core works — the cluster shows presets.
-> Still rough: autostore ("best signal") entries can leak in and selection can be jittery.
-> See *Known issues*. Contributions welcome.
+> **Status: working.** The cluster shows **only your manual presets**, and selection is
+> stable. The earlier autostore leakage and selection jitter are **fixed in v48e** by
+> filtering on the preset-slot number instead of a blunt size cap (see *How it works*).
+> Contributions still welcome.
 
 ---
 
@@ -80,15 +81,31 @@ The patch:
                 case 11: want = 7; break; }                  // Uni
    java.util.ArrayList list = new java.util.ArrayList();
    if (src != null && want != -1)
-       for (int i = 0; i < src.length; i++)
-           if (src[i] != null && src[i].getType() == want) list.add(src[i]);
-   while (list.size() > 15) list.remove(list.size() - 1);    // keep manual presets only
+       for (int i = 0; i < src.length; i++) {
+           if (src[i] == null || src[i].getType() != want) continue;
+           int pos = src[i].getPresetPos();
+           if (pos < 1 || pos > 15) continue;   // manual slots only; drops autostore (pos 0 / >15)
+           list.add(src[i]);
+       }
+   // stable order by slot -> cursor no longer jumps when the tuner pushes a background update
+   java.util.Collections.sort(list, new java.util.Comparator() {
+       public int compare(Object a, Object b) {
+           return ((TunerObjectContainer) a).getPresetPos()
+                - ((TunerObjectContainer) b).getPresetPos();
+       }
+   });
    TunerObjectContainer[] arr;
    if (list.size() > 0) arr = (TunerObjectContainer[]) list.toArray(new TunerObjectContainer[list.size()]);
    else                 arr = iTunerGUIHandler.getStationList();
    ```
 
-   > **Why the band filter is required:** `createAMFMList()` assumes every entry is AMFM
+   > **Why filter on `getPresetPos()`:** manual presets occupy slots **1..15**; autostore /
+   > "best signal" stations have **pos 0** (no manual slot). Filtering on the slot number is
+   > what cleanly keeps *only* the presets, and sorting by it gives each preset a **stable
+   > position**, which is what removed the selection jitter (the list used to be rebuilt in a
+   > shifting order on every background station-list update).
+   >
+   > **Why the band filter is also required:** `createAMFMList()` assumes every entry is AMFM
    > (`getAMFMService().getUniqueId()`), so feeding mixed‑band presets throws an NPE and the
    > list disappears. Filter by band type first.
 
@@ -125,13 +142,18 @@ Restore the `lsd.sh` backup and delete `/mnt/app/eso/hmi/lsd/jars/PresetKombi.ja
 - The cluster's `PreferredList` hint does **not** by itself change which list opens — you must
   change the **reception list source** (`sendReceptionList`).
 
+## Fixed in v48e
+
+- **Autostore leakage — fixed.** Now filters on `getPresetPos()` (manual slots 1..15),
+  so auto‑stored "best signal" stations (pos 0) are dropped. The old `>15` size cap is gone.
+- **Selection instability — fixed.** Sorting by preset slot gives each entry a stable
+  position, so the cursor no longer jumps when the tuner pushes a background list update.
+
 ## Known issues / TODO
 
-- **Autostore leakage:** the memory list can include auto‑stored "best signal" stations after
-  your manual presets; the `>15` cap is a crude trim. A proper manual‑vs‑autostore flag would be better.
-- **Selection instability:** the list rebuilds on background station‑list updates; needs
-  throttling and/or a cleaner ID mapping for the cluster selection.
 - AM vs FM ordering when both have presets isn't fully handled.
+- Tested on one car (2017 base Macan, MHI2). Other MHI2 units/firmwares may need the
+  band-type / slot-range values adjusted.
 
 PRs / ideas welcome.
 
@@ -149,3 +171,4 @@ Modifying your head unit can brick it. This is provided as‑is, for your **own*
 ### ☕ Support
 If this helped you, you can support the work:
 **Ko‑fi:** https://ko-fi.com/trd_10
+
